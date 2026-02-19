@@ -7,8 +7,11 @@ const API_BASE = 'https://api.github.com';
 
 export function loadState(): AppState {
   try {
-    return JSON.parse(readFileSync(STATE_PATH, 'utf-8'));
+    const state = JSON.parse(readFileSync(STATE_PATH, 'utf-8'));
+    console.log(`[State] Loaded ${Object.keys(state).length} repo(s)`);
+    return state;
   } catch {
+    console.log('[State] No existing state, starting fresh');
     return {};
   }
 }
@@ -16,6 +19,7 @@ export function loadState(): AppState {
 export function saveState(state: AppState): void {
   mkdirSync(resolve(STATE_PATH, '..'), { recursive: true });
   writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+  console.log(`[State] Saved ${Object.keys(state).length} repo(s)`);
 }
 
 export async function checkRepo(

@@ -18,6 +18,7 @@ async function processRepo(
   const now = new Date().toISOString();
 
   if (result.newReleases.length === 0) {
+    console.log(`[${repo}] No new releases`);
     if (result.etag && result.etag !== state[repo]?.etag) {
       state[repo] = {
         lastRelease: state[repo]?.lastRelease ?? '',
@@ -65,23 +66,31 @@ async function runCheck(): Promise<void> {
     `[Check] ${new Date().toISOString()} — ${repos.length} repo(s)`,
   );
 
+  const start = Date.now();
   const state = loadState();
+  let updated = 0;
+  let failed = 0;
 
   for (const repo of repos) {
     if (!running) break;
     try {
       await processRepo(repo, state);
+      if (state[repo]?.lastCheck === new Date().toISOString()) updated++;
     } catch (e) {
       console.error(`[${repo}] Unexpected error:`, e);
+      failed++;
     }
   }
 
   saveState(state);
+  console.log(
+    `[Check] Done in ${Date.now() - start}ms. Repos: ${repos.length}, failed: ${failed}`,
+  );
 }
 
 async function main(): Promise<void> {
   console.log(
-    `Started. Interval: ${config.checkInterval}s`,
+    `Started. Provider: ${config.aiProvider}, Model: ${config.aiModel}, Interval: ${config.checkInterval}s`,
   );
 
   await runCheck();

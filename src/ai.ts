@@ -62,6 +62,7 @@ export async function categorizeRelease(
 
   if (!release.body?.trim()) return base;
 
+  const start = Date.now();
   try {
     const { text } = await generateText({
       model,
@@ -69,13 +70,20 @@ export async function categorizeRelease(
       prompt: release.body,
     });
 
+    console.log(
+      `[AI] Categorized ${release.tag_name} in ${Date.now() - start}ms`,
+    );
+
     const cleaned = text.replace(/^```(?:json)?\s*|\s*```$/g, '').trim();
     const parsed = JSON.parse(cleaned) as { categories: CategoryGroup[] };
     base.categories = parsed.categories.filter(
       (c) => VALID_TYPES.has(c.type) && c.items.length > 0,
     );
   } catch (e) {
-    console.error(`[AI] Failed for ${release.tag_name}:`, e);
+    console.error(
+      `[AI] Failed for ${release.tag_name} after ${Date.now() - start}ms:`,
+      e,
+    );
     base.categories = [
       { type: 'other', items: [release.body.slice(0, 500)] },
     ];
