@@ -1,0 +1,85 @@
+import type { GitHubRelease, AppState, CheckResult } from './types.js';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const STATE_PATH = resolve(import.meta.dirname, '..', 'data', 'state.json');
+const API_BASE = 'https://api.github.com';
+
+export function loadState(): AppState {
+  try {
+    return JSON.parse(readFileSync(STATE_PATH, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+export function saveState(state: AppState): void {
+  mkdirSync(resolve(STATE_PATH, '..'), { recursive: true });
+  writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+}
+
+export async function checkRepo(
+  repo: string,
+  token: string,
+  state: AppState,
+): Promise<CheckResult> {
+  const repoState = state[repo];
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+    Authorization: `Bearer ${token}`,
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+
+  if (repoState?.etag) {
+    headers['If-None-Match'] = repoState.etag;
+  }
+
+  const res = await fetch(
+    `${API_BASE}/repos/${repo}/releases?per_page=30`,
+    { headers },
+  );
+
+  if (res.status === 304) {
+    return { repo, newReleases: [], etag: repoState?.etag ?? null };
+  }
+
+  if (res.status === 403) {
+    const resetAt = res.headers.get('x-ratelimit-reset');
+    if (resetAt) {
+      const waitMs = Number(resetAt) * 1000 - Date.now();
+      if (waitMs > 0) {
+        console.warn(
+          `[${repo}] Rate limited, reset in ${Math.ceil(waitMs / 1000)}s`,
+        );
+      }
+    }
+    return { repo, newReleases: [], etag: repoState?.etag ?? null };
+  }
+
+  if (!res.ok) {
+    console.error(`[${repo}] GitHub API error: ${res.status}`);
+    return { repo, newReleases: [], etag: repoState?.etag ?? null };
+  }
+
+  const etag = res.headers.get('etag');
+  const releases = (await res.json()) as GitHubRelease[];
+
+  const published = releases.filter((r) => !r.draft);
+
+  if (!repoState?.lastRelease) {
+    const latest = published[0];
+    return {
+      repo,
+      newReleases: latest ? [latest] : [],
+      etag,
+    };
+  }
+
+  const newReleases: GitHubRelease[] = [];
+  for (const r of published) {
+    if (r.tag_name === repoState.lastRelease) break;
+    newReleases.push(r);
+  }
+
+  return { repo, newReleases, etag };
+}
