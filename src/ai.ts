@@ -1,13 +1,9 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createAnthropic } from '@ai-sdk/anthropic';
-import {
-  Output,
-  extractJsonMiddleware,
-  generateText,
-  jsonSchema,
-  wrapLanguageModel,
-} from 'ai';
+import { Output, generateText } from 'ai';
+import { z } from 'zod';
+import { zodSchema } from 'ai';
 import type { LanguageModelV3 } from '@ai-sdk/provider';
 import type {
   AppConfig,
@@ -17,41 +13,51 @@ import type {
   CategoryType,
 } from './types.js';
 
-const CATEGORY_TYPES: CategoryType[] = [
-  'feat', 'fix', 'perf', 'refactor', 'docs', 'other',
-];
+const CategoryTypeEnum = z.enum(['feat', 'fix', 'perf', 'refactor', 'docs', 'other']);
 
-const VALID_TYPES = new Set<CategoryType>(CATEGORY_TYPES);
-
-type ReleaseCategoriesOutput = {
-  categories: CategoryGroup[];
-};
-
-const RELEASE_OUTPUT_SCHEMA = jsonSchema<ReleaseCategoriesOutput>({
-  type: 'object',
-  additionalProperties: false,
-  required: ['categories'],
-  properties: {
-    categories: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['type', 'items'],
-        properties: {
-          type: {
-            type: 'string',
-            enum: CATEGORY_TYPES,
-          },
-          items: {
-            type: 'array',
-            items: { type: 'string' },
-          },
-        },
-      },
-    },
-  },
+const CategoryGroupSchema = z.object({
+  type: CategoryTypeEnum,
+  items: z.array(z.string().min(1)).min(1),
 });
+
+const ReleaseCategoriesSchema = z.object({
+  categories: z.array(CategoryGroupSchema).default([]),
+});
+
+const RELEASE_OUTPUT_SCHEMA = zodSchema(ReleaseCategoriesSchema);
+
+function inferTypeFromText(text: string): CategoryType {
+  const content = text.toLowerCase();
+  if (/(^|\b)(feat|feature|新增|新功能|支持)($|\b)/i.test(content)) return 'feat';
+  if (/(^|\b)(fix|bug|修复|纠正)($|\b)/i.test(content)) return 'fix';
+  if (/(^|\b)(perf|optimi[sz]e|性能|优化|提速)($|\b)/i.test(content)) return 'perf';
+  if (/(^|\b)(refactor|重构)($|\b)/i.test(content)) return 'refactor';
+  if (/(^|\b)(docs?|readme|文档)($|\b)/i.test(content)) return 'docs';
+  return 'other';
+}
+
+function fallbackCategoriesFromBody(body: string): CategoryGroup[] {
+  const groups = new Map<CategoryType, string[]>();
+  const lines = body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('*') || line.startsWith('-') || line.startsWith('•'))
+    .map((line) => line.replace(/^[-*•]\s*/, '').trim())
+    .filter((line) => line.length > 0);
+
+  for (const line of lines) {
+    const type = inferTypeFromText(line);
+    const existing = groups.get(type) ?? [];
+    existing.push(line);
+    groups.set(type, existing);
+  }
+
+  if (groups.size === 0) {
+    return [{ type: 'other', items: [body.slice(0, 500)] }];
+  }
+
+  return Array.from(groups.entries()).map(([type, items]) => ({ type, items }));
+}
 
 function formatDate(iso: string, timeZone: string): string {
   const dtf = new Intl.DateTimeFormat('en-CA', {
@@ -71,70 +77,114 @@ function formatDate(iso: string, timeZone: string): string {
 }
 
 const SYSTEM_PROMPT = `You are a GitHub Release Notes translator and categorizer.
-Given release notes in any language, you MUST:
+
+Your task:
 1. Translate all content to Chinese (简体中文)
-2. Categorize each change into exactly one type: feat, fix, perf, refactor, docs, other
-3. Return data that strictly follows the provided schema
+2. Categorize each change into exactly ONE type:
+   - feat: New features, capabilities, or functionality
+   - fix: Bug fixes, error corrections
+   - perf: Performance improvements, optimizations
+   - refactor: Code restructuring without behavior change
+   - docs: Documentation updates
+   - other: Everything else (breaking changes, deprecations, etc.)
 
 Rules:
-- Each item should be a concise one-line description in Chinese
+- Each item must be a concise one-line description in Chinese
 - Merge duplicate or very similar items
-- If a change doesn't fit feat/fix/perf/refactor/docs, use "other"
 - Skip CI/build/dependency-only changes unless significant
-- If input is empty or meaningless, return an empty categories array`;
+- If input is empty or meaningless, return empty categories array
+- NEVER return markdown code fences
+- ONLY return valid JSON matching the schema
 
-function stripCodeFence(text: string): string {
-  return text.replace(/^```(?:json)?\s*|\s*```$/g, '').trim();
+Examples:
+
+Input:
+## What's Changed
+* Add dark mode support by @user1
+* Fix crash on startup by @user2
+* Update README.md by @user3
+
+Output:
+{
+  "categories": [
+    {
+      "type": "feat",
+      "items": ["新增深色模式支持"]
+    },
+    {
+      "type": "fix",
+      "items": ["修复启动时崩溃问题"]
+    },
+    {
+      "type": "docs",
+      "items": ["更新 README 文档"]
+    }
+  ]
 }
 
-function extractFirstJsonObject(text: string): string | null {
-  const input = stripCodeFence(text);
-  const start = input.indexOf('{');
+Input:
+### Features
+- Implement user authentication with JWT
+- Add export to CSV functionality
 
-  if (start === -1) return null;
+### Bug Fixes
+- Resolve memory leak in background worker
+- Fix incorrect date formatting
 
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = start; i < input.length; i++) {
-    const ch = input[i];
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (ch === '\\') {
-        escaped = true;
-        continue;
-      }
-      if (ch === '"') {
-        inString = false;
-      }
-      continue;
+Output:
+{
+  "categories": [
+    {
+      "type": "feat",
+      "items": ["实现 JWT 用户认证", "新增导出为 CSV 功能"]
+    },
+    {
+      "type": "fix",
+      "items": ["解决后台工作进程内存泄漏", "修复日期格式错误"]
     }
-
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (ch === '{') {
-      depth++;
-      continue;
-    }
-
-    if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        return input.slice(start, i + 1);
-      }
-    }
-  }
-
-  return null;
+  ]
 }
+
+Input:
+🚀 Performance improvements in database queries
+⚡ Optimize image loading speed
+📝 Refactor authentication module
+
+Output:
+{
+  "categories": [
+    {
+      "type": "perf",
+      "items": ["优化数据库查询性能", "提升图片加载速度"]
+    },
+    {
+      "type": "refactor",
+      "items": ["重构认证模块"]
+    }
+  ]
+}
+
+Input:
+Breaking: Remove deprecated API endpoints
+Deprecate old configuration format
+
+Output:
+{
+  "categories": [
+    {
+      "type": "other",
+      "items": ["移除已弃用的 API 端点", "弃用旧配置格式"]
+    }
+  ]
+}
+
+Input:
+
+
+Output:
+{
+  "categories": []
+}`;
 
 export function createAIClient(config: AppConfig): LanguageModelV3 {
   const opts = {
@@ -150,7 +200,6 @@ export function createAIClient(config: AppConfig): LanguageModelV3 {
     case 'openai-responses':
       return createOpenAI(opts).responses(config.aiModel);
     default:
-      // .chat() ensures /v1/chat/completions format (compatible with proxies)
       return createOpenAI(opts).chat(config.aiModel);
   }
 }
@@ -169,47 +218,35 @@ export async function categorizeRelease(
 
   if (!release.body?.trim()) return base;
 
-  const structuredModel = wrapLanguageModel({
-    model,
-    middleware: extractJsonMiddleware({
-      transform: (text) => {
-        const repaired = extractFirstJsonObject(text);
-
-        if (repaired) {
-          console.warn(`[AI] Repaired malformed output for ${release.tag_name}`);
-          return repaired;
-        }
-
-        return stripCodeFence(text);
-      },
-    }),
-  });
-
   const start = Date.now();
   try {
     const { output } = await generateText({
-      model: structuredModel,
+      model,
       system: SYSTEM_PROMPT,
       prompt: release.body,
       output: Output.object({ schema: RELEASE_OUTPUT_SCHEMA }),
       temperature: 0,
     });
 
-    console.log(
-      `[AI] Categorized ${release.tag_name} in ${Date.now() - start}ms`,
-    );
+    const elapsed = Date.now() - start;
+    const validCategories = output.categories
+      .map(cat => ({
+        type: cat.type,
+        items: cat.items.filter(item => item.trim().length > 0)
+      }))
+      .filter(cat => cat.items.length > 0);
 
-    base.categories = output.categories.filter(
-      (c) => VALID_TYPES.has(c.type) && c.items.length > 0,
-    );
+    if (validCategories.length === 0) {
+      console.warn(`[AI] Empty categories for ${release.tag_name}, using fallback`);
+      base.categories = fallbackCategoriesFromBody(release.body);
+    } else {
+      console.log(`[AI] Categorized ${release.tag_name} in ${elapsed}ms (${validCategories.length} categories)`);
+      base.categories = validCategories;
+    }
   } catch (e) {
-    console.error(
-      `[AI] Failed for ${release.tag_name} after ${Date.now() - start}ms:`,
-      e,
-    );
-    base.categories = [
-      { type: 'other', items: [release.body.slice(0, 500)] },
-    ];
+    const elapsed = Date.now() - start;
+    console.error(`[AI] Failed for ${release.tag_name} after ${elapsed}ms:`, e);
+    base.categories = fallbackCategoriesFromBody(release.body);
   }
 
   return base;
