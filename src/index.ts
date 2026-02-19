@@ -5,7 +5,10 @@ import { loadState, saveState, checkRepo } from './github.js';
 import { createAIClient, categorizeRelease } from './ai.js';
 import { splitMessages } from './formatter.js';
 import { sendMessage } from './telegram.js';
+import { setupLogging } from './logger.js';
 import type { AppState, CategorizedRelease } from './types.js';
+
+setupLogging();
 
 const config = loadConfig();
 const model = createAIClient(config);
