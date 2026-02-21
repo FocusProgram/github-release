@@ -1,3 +1,10 @@
+export type SubscribeMode = 'release' | 'tag';
+
+export interface Subscription {
+  repo: string;
+  mode: SubscribeMode;
+}
+
 export interface GitHubRelease {
   tag_name: string;
   name: string | null;
@@ -8,14 +15,35 @@ export interface GitHubRelease {
   prerelease: boolean;
 }
 
+export interface GitHubTag {
+  name: string;
+  commit: { sha: string; url: string };
+}
+
+export interface GitHubCompareCommit {
+  sha: string;
+  commit: {
+    message: string;
+    author: { name: string; date: string } | null;
+  };
+  html_url: string;
+}
+
 export interface CheckResult {
   repo: string;
   newReleases: GitHubRelease[];
   etag: string | null;
 }
 
+export interface TagCheckResult {
+  repo: string;
+  newTags: GitHubTag[];
+  etag: string | null;
+}
+
 export interface RepoState {
-  lastRelease: string;
+  lastRelease?: string;
+  lastTag?: string;
   etag: string | null;
   lastCheck: string;
 }

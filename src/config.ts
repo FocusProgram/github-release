@@ -1,5 +1,5 @@
 import { validateCronExpression } from 'cron';
-import type { AIProvider, AppConfig } from './types.js';
+import type { AIProvider, AppConfig, Subscription, SubscribeMode } from './types.js';
 const VALID_PROVIDERS = new Set<AIProvider>(['openai-completions', 'openai-responses', 'google', 'anthropic']);
 
 function requiredEnv(key: string): string {
@@ -52,22 +52,40 @@ export function loadConfig(): AppConfig {
   };
 }
 
-export function loadSubscriptions(): string[] {
+const VALID_MODES = new Set<SubscribeMode>(['release', 'tag']);
+
+export function loadSubscriptions(): Subscription[] {
   const envRepos = process.env.SUBSCRIBE_REPOS;
   if (!envRepos) {
     throw new Error(
-      'Missing required env: SUBSCRIBE_REPOS. Set comma-separated repos, e.g. SUBSCRIBE_REPOS=vuejs/core,nodejs/node',
+      'Missing required env: SUBSCRIBE_REPOS. Set comma-separated repos, e.g. SUBSCRIBE_REPOS=vuejs/core,some/repo:tag',
     );
   }
 
-  const repos = envRepos
+  const entries = envRepos
     .split(',')
     .map((r) => r.trim())
     .filter(Boolean);
 
-  if (repos.length === 0) {
+  if (entries.length === 0) {
     throw new Error('SUBSCRIBE_REPOS is empty. Add at least one repo.');
   }
 
-  return repos;
+  return entries.map((entry) => {
+    const colonIdx = entry.lastIndexOf(':');
+    if (colonIdx === -1) {
+      return { repo: entry, mode: 'release' as SubscribeMode };
+    }
+
+    const maybeSuffix = entry.slice(colonIdx + 1);
+    if (VALID_MODES.has(maybeSuffix as SubscribeMode)) {
+      return {
+        repo: entry.slice(0, colonIdx),
+        mode: maybeSuffix as SubscribeMode,
+      };
+    }
+
+    // Not a valid mode suffix, treat entire string as repo name
+    return { repo: entry, mode: 'release' as SubscribeMode };
+  });
 }

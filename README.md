@@ -10,6 +10,7 @@ Subscribe to GitHub repository releases, automatically translate and categorize 
 ## Features
 
 - Scheduled GitHub Release polling (with ETag caching to save API quota)
+- Tag-based subscription for repos without releases
 - AI-powered translation + categorization (Features, Bug Fixes, Performance, Refactoring, Documentation, Other)
 - Multiple AI providers: OpenAI / Google Gemini / Anthropic Claude
 - Configurable target language for translation (default: English)
@@ -143,6 +144,28 @@ Set the `SUBSCRIBE_REPOS` environment variable with comma-separated GitHub repos
 ```env
 SUBSCRIBE_REPOS=vuejs/core,nodejs/node,microsoft/vscode
 ```
+
+### Subscription Modes
+
+Each repo can optionally specify a subscription mode with a `:mode` suffix:
+
+| Format | Mode | Description |
+|--------|------|-------------|
+| `owner/repo` | `release` | Subscribe to GitHub Releases (default) |
+| `owner/repo:release` | `release` | Explicitly subscribe to Releases |
+| `owner/repo:tag` | `tag` | Subscribe to new Git tags (for repos without Releases) |
+
+Example:
+
+```env
+SUBSCRIBE_REPOS=vuejs/core,some-org/lib:tag,another/tool:release
+```
+
+- `vuejs/core` — monitors Releases (default)
+- `some-org/lib:tag` — monitors new Git tags, generates changelog from commits between tags
+- `another/tool:release` — explicitly monitors Releases
+
+In **tag mode**, the bot fetches commits between the previous and new tag (up to 50), feeds them to AI for categorization, and sends the result in the same format as release notifications.
 
 For GitHub Actions, set this as a **Variable** in repository settings.
 For Docker/local, add it to your `.env` file.

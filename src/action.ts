@@ -1,11 +1,11 @@
 import 'dotenv/config';
 import { loadConfig, loadSubscriptions } from './config.js';
-import { loadState, saveState, checkRepo } from './github.js';
+import { loadState, saveState, checkRepo, checkRepoTags, getCompareCommits, getTagCommits, getCommitDate } from './github.js';
 import { createAIClient, categorizeRelease } from './ai.js';
 import { splitMessages } from './formatter.js';
 import { sendMessage } from './telegram.js';
 import { setupLogging } from './logger.js';
-import type { AppState, CategorizedRelease } from './types.js';
+import type { AppState, CategorizedRelease, Subscription, GitHubRelease } from './types.js';
 
 // Single-run entry point for GitHub Actions (no cron loop)
 setupLogging();
@@ -19,7 +19,7 @@ if (!config.githubToken) {
   );
 }
 
-async function processRepo(
+async function processReleaseRepo(
   repo: string,
   state: AppState,
 ): Promise<void> {
@@ -30,7 +30,7 @@ async function processRepo(
     console.log(`[${repo}] No new releases`);
     if (result.etag && result.etag !== state[repo]?.etag) {
       state[repo] = {
-        lastRelease: state[repo]?.lastRelease ?? '',
+        lastRelease: state[repo]?.lastRelease,
         etag: result.etag,
         lastCheck: now,
       };
@@ -71,28 +71,120 @@ async function processRepo(
   console.log(`[${repo}] Notified, latest: ${state[repo].lastRelease}`);
 }
 
-async function run(): Promise<void> {
-  const repos = loadSubscriptions();
+async function processTagRepo(
+  repo: string,
+  state: AppState,
+): Promise<void> {
+  const key = `${repo}:tag`;
+  const result = await checkRepoTags(repo, config.githubToken, state);
+  const now = new Date().toISOString();
+
+  if (result.newTags.length === 0) {
+    console.log(`[${repo}:tag] No new tags`);
+    if (result.etag && result.etag !== state[key]?.etag) {
+      state[key] = {
+        lastTag: state[key]?.lastTag,
+        etag: result.etag,
+        lastCheck: now,
+      };
+    }
+    return;
+  }
+
   console.log(
-    `[Check] ${new Date().toISOString()} — ${repos.length} repo(s)`,
+    `[${repo}:tag] Found ${result.newTags.length} new tag(s)`,
+  );
+
+  const prevTag = state[key]?.lastTag;
+  const categorized: CategorizedRelease[] = [];
+
+  for (const tag of [...result.newTags].reverse()) {
+    let commits;
+    if (prevTag || categorized.length > 0) {
+      const base = categorized.length > 0
+        ? result.newTags[result.newTags.length - categorized.length]?.name ?? prevTag!
+        : prevTag!;
+      commits = await getCompareCommits(
+        repo, base, tag.name, config.githubToken,
+      );
+    } else {
+      // First run: no previous tag, fetch recent commits for this tag
+      commits = await getTagCommits(repo, tag.name, config.githubToken);
+    }
+    const body = commits.map((c) => c.commit.message).join('\n');
+    const tagDate = await getCommitDate(repo, tag.commit.sha, config.githubToken);
+
+    const pseudoRelease: GitHubRelease = {
+      tag_name: tag.name,
+      name: tag.name,
+      body,
+      html_url: `https://github.com/${repo}/releases/tag/${tag.name}`,
+      published_at: tagDate ?? now,
+      draft: false,
+      prerelease: false,
+    };
+
+    categorized.push(
+      await categorizeRelease(model, pseudoRelease, config.timezone, config.targetLang),
+    );
+  }
+
+  categorized.reverse();
+  const messages = splitMessages(repo, categorized, config.targetLang);
+
+  for (const msg of messages) {
+    const ok = await sendMessage(
+      config.telegramBotToken,
+      config.telegramChatId,
+      msg,
+    );
+    if (!ok) {
+      console.error(`[${repo}:tag] Failed to send Telegram message`);
+      return;
+    }
+  }
+
+  state[key] = {
+    lastTag: result.newTags[0].name,
+    etag: result.etag,
+    lastCheck: now,
+  };
+  console.log(`[${repo}:tag] Notified, latest: ${state[key].lastTag}`);
+}
+
+async function processRepo(
+  sub: Subscription,
+  state: AppState,
+): Promise<void> {
+  if (sub.mode === 'tag') {
+    await processTagRepo(sub.repo, state);
+  } else {
+    await processReleaseRepo(sub.repo, state);
+  }
+}
+
+async function run(): Promise<void> {
+  const subs = loadSubscriptions();
+  console.log(
+    `[Check] ${new Date().toISOString()} — ${subs.length} subscription(s)`,
   );
 
   const start = Date.now();
   const state = loadState();
   let failed = 0;
 
-  for (const repo of repos) {
+  for (const sub of subs) {
     try {
-      await processRepo(repo, state);
+      await processRepo(sub, state);
     } catch (e) {
-      console.error(`[${repo}] Unexpected error:`, e);
+      console.error(`[${sub.repo}:${sub.mode}] Unexpected error:`, e);
       failed++;
     }
   }
 
   saveState(state);
   console.log(
-    `[Check] Done in ${Date.now() - start}ms. Repos: ${repos.length}, failed: ${failed}`,
+    `[Check] Done in ${Date.now() - start}ms. Subscriptions: ${subs.length}, failed: ${failed}`,
   );
 
   if (failed > 0) {

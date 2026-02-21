@@ -10,6 +10,7 @@ GitHub リポジトリの Release を購読し、AI で自動的に変更履歴�
 ## 機能
 
 - GitHub Release の定期ポーリング（ETag キャッシュで API クォータを節約）
+- Tag ベースの購読モード（Release のないリポジトリに対応）
 - AI による自動翻訳 + 分類（新機能、修正、最適化、リファクタリング、ドキュメント、その他）
 - 複数の AI プロバイダー対応：OpenAI / Google Gemini / Anthropic Claude
 - 翻訳先言語を設定可能（デフォルト：英語）
@@ -142,6 +143,28 @@ CRON=0 */10 9-23 * * *
 ```env
 SUBSCRIBE_REPOS=vuejs/core,nodejs/node,microsoft/vscode
 ```
+
+### 購読モード
+
+各リポジトリに `:mode` サフィックスで購読モードを指定できます：
+
+| 形式 | モード | 説明 |
+|------|--------|------|
+| `owner/repo` | `release` | GitHub Release を購読（デフォルト） |
+| `owner/repo:release` | `release` | Release を明示的に購読 |
+| `owner/repo:tag` | `tag` | 新しい Git Tag を購読（Release のないリポジトリ向け） |
+
+例：
+
+```env
+SUBSCRIBE_REPOS=vuejs/core,some-org/lib:tag,another/tool:release
+```
+
+- `vuejs/core` — Release を監視（デフォルト）
+- `some-org/lib:tag` — 新しい Git Tag を監視し、Tag 間のコミットから変更履歴を生成
+- `another/tool:release` — Release を明示的に監視
+
+**Tag モード**では、Bot は前後の Tag 間のコミット（最大 50 件）を取得し、AI で分類・翻訳して Release 通知と同じ形式で配信します。
 
 GitHub Actions モードでは、リポジトリの Settings で **Variable** として設定します。
 Docker/ローカルモードでは、`.env` ファイルに追加します。

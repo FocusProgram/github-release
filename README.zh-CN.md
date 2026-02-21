@@ -10,6 +10,7 @@
 ## 功能特性
 
 - 定时轮询 GitHub Release（支持 ETag 缓存，节省 API 配额）
+- 支持 Tag 订阅模式（适用于没有 Release 的项目）
 - AI 自动翻译 + 分类（新功能、修复、优化、重构、文档、其他）
 - 支持多种 AI 提供商：OpenAI / Google Gemini / Anthropic Claude
 - 翻译目标语言可配置（默认英文）
@@ -142,6 +143,28 @@ CRON=0 */10 9-23 * * *
 ```env
 SUBSCRIBE_REPOS=vuejs/core,nodejs/node,microsoft/vscode
 ```
+
+### 订阅模式
+
+每个仓库可通过 `:mode` 后缀指定订阅模式：
+
+| 格式 | 模式 | 说明 |
+|------|------|------|
+| `owner/repo` | `release` | 订阅 GitHub Release（默认） |
+| `owner/repo:release` | `release` | 显式订阅 Release |
+| `owner/repo:tag` | `tag` | 订阅新 Git Tag（适用于没有 Release 的项目） |
+
+示例：
+
+```env
+SUBSCRIBE_REPOS=vuejs/core,some-org/lib:tag,another/tool:release
+```
+
+- `vuejs/core` — 监听 Release（默认）
+- `some-org/lib:tag` — 监听新 Git Tag，根据两个 Tag 之间的 commits 生成更新日志
+- `another/tool:release` — 显式监听 Release
+
+**Tag 模式**下，Bot 会获取前后两个 Tag 之间的 commits（最多 50 条），交给 AI 分类翻译，推送格式与 Release 通知一致。
 
 GitHub Actions 模式下，在仓库 Settings 中设置为 **Variable**。
 Docker/本地模式下，添加到 `.env` 文件中。
