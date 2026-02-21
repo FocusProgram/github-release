@@ -1,39 +1,35 @@
-import { createOpenAI } from '@ai-sdk/openai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { createAnthropic } from '@ai-sdk/anthropic';
-import { Output, generateText } from 'ai';
-import { z } from 'zod';
-import { zodSchema } from 'ai';
-import type { LanguageModelV3 } from '@ai-sdk/provider';
+import { createOpenAI } from "@ai-sdk/openai";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { generateText } from "ai";
+import type { LanguageModelV3 } from "@ai-sdk/provider";
 import type {
   AppConfig,
   GitHubRelease,
   CategorizedRelease,
   CategoryGroup,
   CategoryType,
-} from './types.js';
+} from "./types.js";
 
-const CategoryTypeEnum = z.enum(['feat', 'fix', 'perf', 'refactor', 'docs', 'other']);
-
-const CategoryGroupSchema = z.object({
-  type: CategoryTypeEnum,
-  items: z.array(z.string().min(1)).min(1),
-});
-
-const ReleaseCategoriesSchema = z.object({
-  categories: z.array(CategoryGroupSchema),
-});
-
-const RELEASE_OUTPUT_SCHEMA = zodSchema(ReleaseCategoriesSchema);
+const VALID_TYPES = new Set<CategoryType>([
+  "feat",
+  "fix",
+  "perf",
+  "refactor",
+  "docs",
+  "other",
+]);
 
 function inferTypeFromText(text: string): CategoryType {
   const content = text.toLowerCase();
-  if (/(^|\b)(feat|feature|新增|新功能|支持)($|\b)/i.test(content)) return 'feat';
-  if (/(^|\b)(fix|bug|修复|纠正)($|\b)/i.test(content)) return 'fix';
-  if (/(^|\b)(perf|optimi[sz]e|性能|优化|提速)($|\b)/i.test(content)) return 'perf';
-  if (/(^|\b)(refactor|重构)($|\b)/i.test(content)) return 'refactor';
-  if (/(^|\b)(docs?|readme|文档)($|\b)/i.test(content)) return 'docs';
-  return 'other';
+  if (/(^|\b)(feat|feature|新增|新功能|支持)($|\b)/i.test(content))
+    return "feat";
+  if (/(^|\b)(fix|bug|修复|纠正)($|\b)/i.test(content)) return "fix";
+  if (/(^|\b)(perf|optimi[sz]e|性能|优化|提速)($|\b)/i.test(content))
+    return "perf";
+  if (/(^|\b)(refactor|重构)($|\b)/i.test(content)) return "refactor";
+  if (/(^|\b)(docs?|readme|文档)($|\b)/i.test(content)) return "docs";
+  return "other";
 }
 
 function fallbackCategoriesFromBody(body: string): CategoryGroup[] {
@@ -41,8 +37,11 @@ function fallbackCategoriesFromBody(body: string): CategoryGroup[] {
   const lines = body
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line.startsWith('*') || line.startsWith('-') || line.startsWith('•'))
-    .map((line) => line.replace(/^[-*•]\s*/, '').trim())
+    .filter(
+      (line) =>
+        line.startsWith("*") || line.startsWith("-") || line.startsWith("•"),
+    )
+    .map((line) => line.replace(/^[-*•]\s*/, "").trim())
     .filter((line) => line.length > 0);
 
   for (const line of lines) {
@@ -53,27 +52,69 @@ function fallbackCategoriesFromBody(body: string): CategoryGroup[] {
   }
 
   if (groups.size === 0) {
-    return [{ type: 'other', items: [body.slice(0, 500)] }];
+    return [{ type: "other", items: [body.slice(0, 500)] }];
   }
 
   return Array.from(groups.entries()).map(([type, items]) => ({ type, items }));
 }
 
 function formatDate(iso: string, timeZone: string): string {
-  const dtf = new Intl.DateTimeFormat('en-CA', {
+  const dtf = new Intl.DateTimeFormat("en-CA", {
     timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
     hour12: false,
   });
   const parts = dtf.formatToParts(new Date(iso));
   const get = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((p) => p.type === type)?.value ?? '';
-  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
+    parts.find((p) => p.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+}
+
+function extractJsonFromText(text: string): string | null {
+  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (fenceMatch) return fenceMatch[1].trim();
+
+  const braceMatch = text.match(/\{[\s\S]*\}/);
+  if (braceMatch) return braceMatch[0].trim();
+
+  return null;
+}
+
+function parseCategories(text: string): CategoryGroup[] | null {
+  const json = extractJsonFromText(text);
+  if (!json) return null;
+
+  try {
+    const parsed = JSON.parse(json) as { categories?: unknown[] };
+    const cats = parsed.categories;
+    if (!Array.isArray(cats)) return null;
+
+    const valid = cats
+      .filter(
+        (cat): cat is { type: string; items: string[] } =>
+          typeof cat === "object" &&
+          cat !== null &&
+          typeof (cat as { type?: unknown }).type === "string" &&
+          VALID_TYPES.has((cat as { type: string }).type as CategoryType) &&
+          Array.isArray((cat as { items?: unknown }).items),
+      )
+      .map((cat) => ({
+        type: cat.type as CategoryType,
+        items: cat.items.filter(
+          (item: string) => typeof item === "string" && item.trim().length > 0,
+        ),
+      }))
+      .filter((cat) => cat.items.length > 0);
+
+    return valid.length > 0 ? valid : null;
+  } catch {
+    return null;
+  }
 }
 
 function buildSystemPrompt(targetLang: string): string {
@@ -197,11 +238,11 @@ export function createAIClient(config: AppConfig): LanguageModelV3 {
   };
 
   switch (config.aiProvider) {
-    case 'google':
+    case "google":
       return createGoogleGenerativeAI(opts)(config.aiModel);
-    case 'anthropic':
+    case "anthropic":
       return createAnthropic(opts)(config.aiModel);
-    case 'openai-responses':
+    case "openai-responses":
       return createOpenAI(opts).responses(config.aiModel);
     default:
       return createOpenAI(opts).chat(config.aiModel);
@@ -225,29 +266,27 @@ export async function categorizeRelease(
 
   const start = Date.now();
   try {
-    const { output } = await generateText({
+    const { text } = await generateText({
       model,
       system: buildSystemPrompt(targetLang),
       prompt: release.body,
-      output: Output.object({ schema: RELEASE_OUTPUT_SCHEMA }),
     });
 
     const elapsed = Date.now() - start;
-    const validCategories = (output.categories ?? [])
-      .map(cat => ({
-        type: cat.type,
-        items: cat.items.filter(item => item.trim().length > 0)
-      }))
-      .filter(cat => cat.items.length > 0);
+    const validCategories = parseCategories(text);
 
-    if (validCategories.length === 0) {
-      console.warn(`[AI] Empty categories for ${release.tag_name}, using fallback`);
+    if (!validCategories) {
+      console.warn(
+        `[AI] Failed to parse response for ${release.tag_name}, using fallback`,
+      );
       base.categories = fallbackCategoriesFromBody(release.body);
     } else {
-      console.log(`[AI] Categorized ${release.tag_name} in ${elapsed}ms (${validCategories.length} categories)`);
+      console.log(
+        `[AI] Categorized ${release.tag_name} in ${elapsed}ms (${validCategories.length} categories)`,
+      );
       base.categories = validCategories;
     }
-  } catch (e) {
+  } catch (e: unknown) {
     const elapsed = Date.now() - start;
     console.error(`[AI] Failed for ${release.tag_name} after ${elapsed}ms:`, e);
     base.categories = fallbackCategoriesFromBody(release.body);
